@@ -14,10 +14,12 @@ use libafl::{
     monitors::SimpleMonitor,
     events::SimpleEventManager,
     schedulers::QueueScheduler,
-    fuzzer::StdFuzzer,
+    fuzzer::{ Fuzzer, StdFuzzer },
     generators::RandPrintablesGenerator,
     observers::StdMapObserver,
     feedbacks::{ CrashFeedback, MaxMapFeedback },
+    mutators::{ havoc_mutations::havoc_mutations, scheduled::StdScheduledMutator },
+    stages::mutational::StdMutationalStage,
 };
 
 use libafl_bolts::{
@@ -70,7 +72,6 @@ fn main()
     let mut objective = CrashFeedback::new();
 
 
-
     let mut state = StdState::new(
         StdRand::new(),
         InMemoryCorpus::<BytesInput>::new(),
@@ -100,4 +101,11 @@ fn main()
     let mut generator = RandPrintablesGenerator::new(nonzero!(32));
 
     state.generate_initial_inputs(&mut fuzzer, &mut executor, &mut generator, &mut mgr, 8).expect("Failed to generate the initial corpus");
+
+
+    let mutator = StdScheduledMutator::new(havoc_mutations());
+    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+
+    fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr).expect("Error in the fuzzing loop");
+
 }
