@@ -1,0 +1,23 @@
+[package]
+name = "baby_fuzzer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libafl = { path = "/data/data/com.termux/files/home/LibAFL-tag/0.15.2/libafl" }
+libafl_bolts = { path = "/data/data/com.termux/files/home/LibAFL-tag/0.15.2/libafl_bolts/" }
+
+
+[features]
+panic = []
+
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = 3
+debug = true
