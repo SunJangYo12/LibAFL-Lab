@@ -8,8 +8,6 @@ libafl = { path = "/data/data/com.termux/files/home/LibAFL-tag/0.15.2/libafl" }
 libafl_bolts = { path = "/data/data/com.termux/files/home/LibAFL-tag/0.15.2/libafl_bolts/" }
 
 
-[features]
-panic = []
 
 
 [profile.dev]
