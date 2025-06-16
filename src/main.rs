@@ -1,3 +1,8 @@
+/*
+* Source: https://aflplus.plus/libafl-book/baby_fuzzer
+* urutan tutorial import alias use libafl...
+*/
+
 extern crate libafl;
 extern crate libafl_bolts;
 
@@ -11,15 +16,29 @@ use libafl::{
     schedulers::QueueScheduler,
     fuzzer::StdFuzzer,
     generators::RandPrintablesGenerator,
+    observers::StdMapObserver,
+    feedbacks::{ CrashFeedback, MaxMapFeedback },
 };
 
 use libafl_bolts::{
     rands::StdRand,
     AsSlice,
     nonzero,
+    tuples::tuple_list,
 };
 
-use std::path::PathBuf;
+use std::{ path::PathBuf, ptr::write };
+
+
+// Coverage map with explicit assignments due to the lack of instrumentation
+static mut SIGNALS: [u8; 16] = [0; 16];
+#[allow(static_mut_refs)]
+static mut SIGNALS_PTR: *mut u8 = unsafe { SIGNALS.as_mut_ptr() };
+
+fn signals_set(idx: usize) {
+    unsafe { write(SIGNALS_PTR.add(idx), 1) };
+}
+
 
 fn main()
 {
@@ -27,9 +46,16 @@ fn main()
         let target = input.target_bytes();
         let buf = target.as_slice();
 
-        if buf.len() > 0 && buf[0] == 'a' as u8 {
-            if buf.len() > 1 && buf[1] == 'b' as u8 {
-                if buf.len() > 2 && buf[2] == 'c' as u8 {
+        signals_set(0);
+
+        if buf.len() > 0 && buf[0] == 'a' as u8 
+        {
+            signals_set(1);
+            if buf.len() > 1 && buf[1] == 'b' as u8 
+            {
+                signals_set(2);
+                if buf.len() > 2 && buf[2] == 'c' as u8 
+                {
                     panic!("=)");
                 }
             }
@@ -37,13 +63,20 @@ fn main()
         ExitKind::Ok
     };
 
+    #[allow(static_mut_refs)]
+    let observer = unsafe { StdMapObserver::from_mut_ptr("signals", SIGNALS_PTR, SIGNALS.len()) };
+
+    let mut feedback = MaxMapFeedback::new(&observer);
+    let mut objective = CrashFeedback::new();
+
+
 
     let mut state = StdState::new(
         StdRand::new(),
         InMemoryCorpus::<BytesInput>::new(),
         OnDiskCorpus::new(PathBuf::from("./crashes")).unwrap(),
-        &mut (),
-        &mut (),
+        &mut feedback,
+        &mut objective,
     )
     .unwrap();
 
@@ -53,9 +86,15 @@ fn main()
 
 
     let scheduler = QueueScheduler::new();
-    let mut fuzzer = StdFuzzer::new(scheduler, (), ());
+    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
 
-    let mut executor = InProcessExecutor::new(&mut harness, (), &mut fuzzer, &mut state, &mut mgr).expect("Failed to create the Executor");
+    let mut executor = InProcessExecutor::new(
+        &mut harness, 
+        tuple_list!(observer),
+        &mut fuzzer,
+        &mut state,
+        &mut mgr)
+    .expect("Failed to create the Executor");
 
 
     let mut generator = RandPrintablesGenerator::new(nonzero!(32));
