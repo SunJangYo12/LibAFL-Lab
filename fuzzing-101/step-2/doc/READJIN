@@ -1,0 +1,60 @@
+#build
+cargo make mybuild
+
+#run
+server:
+$ ./build/fuzzer
+
+client:
+$ ASAN_OPTIONS=abort_on_error=1 ./build/fuzzer
+
+
+
+
+
+
+#NOTE
+using cc ex2_compiler
+$ cp ../target/release/ex2_compiler build
+$ cp ../target/release/libexecu...a build
+$ cp build/libex..a libtiff
+
+$ export CC=../build/ex2_compiler
+$ ./configure....see mybuild.sh
+
+fix make install
+$ nano libtiff/doc/Makefile.am
+comment install-data-local
+
+
+
+~/.../fuzzing-101/step-2 $ neofetch 
+         -o          o-            u0_a139@localhost 
+          +hydNNNNdyh+             ----------------- 
+        +mMMMMMMMMMMMMm+           OS: Android 7.1.2 aarch64 
+      `dMMm:NMMMMMMN:mMMd`         Host: Xiaomi Redmi 4A 
+      hMMMMMMMMMMMMMMMMMMh         Kernel: 3.18.31-perf-gf2fd6b0 
+  ..  yyyyyyyyyyyyyyyyyyyy  ..     Uptime: 2 days, 19 hours, 33 mins 
+.mMMm`MMMMMMMMMMMMMMMMMMMM`mMMm.   Packages: 218 (dpkg), 1 (pkg) 
+:MMMM-MMMMMMMMMMMMMMMMMMMM-MMMM:   Shell: bash 5.2.37 
+:MMMM-MMMMMMMMMMMMMMMMMMMM-MMMM:   Terminal: /dev/pts/1 
+:MMMM-MMMMMMMMMMMMMMMMMMMM-MMMM:   CPU: Qualcomm MSM8917 (4) @ 1.401GHz 
+:MMMM-MMMMMMMMMMMMMMMMMMMM-MMMM:   Memory: 886MiB / 1857MiB 
+-MMMM-MMMMMMMMMMMMMMMMMMMM-MMMM-
+ +yy+ MMMMMMMMMMMMMMMMMMMM +yy+                            
+      mMMMMMMMMMMMMMMMMMMm                                 
+      `/++MMMMh++hMMMM++/`
+          MMMMo  oMMMM
+          MMMMo  oMMMM
+          oNMm-  -mMNs
+
+~/.../fuzzing-101/step-2 $ clang --version
+clang version 19.1.4
+Target: aarch64-unknown-linux-android24
+Thread model: posix
+InstalledDir: /data/data/com.termux/files/usr/bin
+~/.../fuzzing-101/step-2 $ llvm-config --version
+19.1.4
+~/.../fuzzing-101/step-2 $ rustc --version
+rustc 1.82.0 (f6e511eec 2024-10-15) (built from a source tarball)
+~/.../fuzzing-101/step-2 $ cargo-make v.0.35.0
