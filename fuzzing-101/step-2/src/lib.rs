@@ -20,33 +20,54 @@ use libafl_targets::{libfuzzer_test_one_input, std_edges_map_observer};
 
 #[no_mangle]
 fn libafl_main() -> Result<(), Error> {
+
+	/*
+		Tujuan umum:
+		kode ini adalah entrypoint untuk fuzzer menggunakan libafl, yang akan:
+		- membaca corpus awal dari folder.
+		- menjalanakan fuzzing loop terhadap sebuah target (yang berasal dari c/c++ via libfuzzer_test_one_input).
+		- menggunakan berbagai komponen fuzzer seperti feedback, mutator, observer dan scheduler
+		- menyimpan hasil explorasi dan crash.
+	*/
+
+
+
+
+
     // Component: Corpus
-    let corpus_dirs = vec![PathBuf::from("./corpus")];
-    let input_corpus = InMemoryCorpus::<BytesInput>::new();
-    let solutions_corpus = OnDiskCorpus::new(PathBuf::from("./solutions")).unwrap();
+    let corpus_dirs = vec![PathBuf::from("./corpus")]; //lokasi awal input
+    let input_corpus = InMemoryCorpus::<BytesInput>::new(); //corpus yg akan difuzz, disimpan dimemori
+    let solutions_corpus = OnDiskCorpus::new(PathBuf::from("./solutions")).unwrap(); //corpus solusi (misalnya crash, coverage baru), disimpan didisk
+
 
     // Component: Observer
-    let edges_observer =
-        HitcountsMapObserver::new(unsafe { std_edges_map_observer("edges") }).track_indices();
-    let time_observer = TimeObserver::new("time");
+    let edges_observer = HitcountsMapObserver::new(unsafe { //mengamati coverage dengan memanfaatkan sancov instrumnen
+    	std_edges_map_observer("edges")
+    }).track_indices();
+
+    let time_observer = TimeObserver::new("time"); //mengukur wakti eksekusi input
 
 
     // Component: Feedback
-    let mut feedback = feedback_or!(
+    let mut feedback = feedback_or!(  //menentukan apakah sebuah input bernilai cukup menarik untuk disimpan
         MaxMapFeedback::new(&edges_observer),
         TimeFeedback::new(&time_observer)
     );
 
-    let mut objective =
-        feedback_and_fast!(CrashFeedback::new(), MaxMapFeedback::new(&edges_observer));
+    let mut objective = feedback_and_fast!(CrashFeedback::new(), MaxMapFeedback::new(&edges_observer));
+    // menentukan apakah input dianggap berhasil (misalnya crash) dan ditandai sebagai solusi.
+
 
 
     // Component: Monitor
-    let monitor = MultiMonitor::new(|s| {
+    let monitor = MultiMonitor::new(|s| { //mencetak output ke stdout
         println!("{}", s);
     });
 
     // Component: EventManager
+    /* mgr = EventManager mengatur komunikasi antara fuzzer dan thread / worker lain
+     * setup_restarting_mgr_std = memungkinkan restart otomatis setelah crash
+    */
     let (state, mut mgr) = match setup_restarting_mgr_std(monitor, 1337, EventConfig::AlwaysUnique)
     {
         Ok(res) => res,
@@ -62,8 +83,8 @@ fn libafl_main() -> Result<(), Error> {
 
 
     // Component: State
-    let mut state = state.unwrap_or_else(|| {
-        StdState::new(
+    let mut state = state.unwrap_or_else(|| { //menyimpan corpus, RNG(angka acak), feedback state, dsb
+        StdState::new(                        //diinisialisasi saat pertama kali, atau direstorisasi dari restart
             StdRand::with_seed(current_nanos()),
             input_corpus,
             solutions_corpus,
@@ -76,32 +97,34 @@ fn libafl_main() -> Result<(), Error> {
 
     // Component: Scheduler
     let scheduler = IndexesLenTimeMinimizerScheduler::new(&edges_observer, QueueScheduler::new());
+    // menentukan urutan input mana dari corpus yang akan difuzz berikutnya
+    // strategi: memproitaskan input dengan index tertentu, pendek atau cepat dijalankan
 
 
     // Component: Fuzzer
-    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
+    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective); //object fuzzer utama yang menjalankan loop. menggunakan scheduler, feedback dan goal(objective/crash)
 
     // Component: harness
     let mut harness = |input: &BytesInput| {
-        let target = input.target_bytes();
+        let target = input.target_bytes(); //fungsi target yang dipanggil fuzzer
         let buffer = target.as_slice();
-        unsafe { libfuzzer_test_one_input(buffer) };
-        ExitKind::Ok
+        unsafe { libfuzzer_test_one_input(buffer) }; //input akan dipanggil ke fungsi C libfuzzzer_test_one_input.
+        ExitKind::Ok                                 //fungsi ini berasal dari c/c++ target dan di link via libafl_targets
     };
 
 
     // Component: Executor
-    let mut in_proc_executor = InProcessExecutor::with_timeout(
+    let mut in_proc_executor = InProcessExecutor::with_timeout( //menjalankan harness dalam proses(singgle thread), lebih cepat.
         &mut harness,
         tuple_list!(edges_observer, time_observer),
         &mut fuzzer,
         &mut state,
         &mut mgr,
-        Duration::from_millis(5000),
+        Duration::from_millis(5000), //timeout diset agar infinite loop/input lambat bisa dihentikan
     )
     .unwrap();
 
-    if state.corpus().count() < 1 {
+    if state.corpus().count() < 1 { //load corpus awal, jika corpus masih kosong isi dari file input pada ./corpus
         state
             .load_initial_inputs(&mut fuzzer, &mut in_proc_executor, &mut mgr, &corpus_dirs)
             .unwrap_or_else(|err| {
@@ -114,13 +137,13 @@ fn libafl_main() -> Result<(), Error> {
     }
 
     // Component: Mutator
-    let mutator = StdScheduledMutator::new(havoc_mutations());
+    let mutator = StdScheduledMutator::new(havoc_mutations()); //strategi mutasi acak klasik (insert,delete,bitflip, dsb)
 
 
     // Component: Stage
-    let mut stages = tuple_list!(StdMutationalStage::new(mutator));
+    let mut stages = tuple_list!(StdMutationalStage::new(mutator)); //yang akan menjalankan mutasi
 
-    fuzzer.fuzz_loop_for(
+    fuzzer.fuzz_loop_for( //menjalankan loop fuzzing selama 1000 iterasi, bisa diganti fuzz_loop() untuk tanpa batas
             &mut stages,
             &mut in_proc_executor,
             &mut state,
