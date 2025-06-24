@@ -1,0 +1,142 @@
+# Variables
+[env]
+FUZZER_NAME = 'fuzzer_libpng'
+PROJECT_DIR = { script = ["pwd"] }
+CARGO_TARGET_DIR = { value = "${PROJECT_DIR}/target", condition = { env_not_set = [
+  "CARGO_TARGET_DIR",
+] } }
+PROFILE = { value = "release", condition = { env_not_set = ["PROFILE"] } }
+PROFILE_DIR = { value = "release", condition = { env_not_set = [
+  "PROFILE_DIR",
+] } }
+LIBAFL_CC = '${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc'
+LIBAFL_CXX = '${CARGO_TARGET_DIR}/${PROFILE}/libafl_cxx'
+FUZZER = '${CARGO_TARGET_DIR}/${PROFILE_DIR}/${FUZZER_NAME}'
+
+
+# libpng
+[tasks.libpng]
+condition = { files_not_exist = ["./libpng-1.6.37"] }
+script_runner = "@shell"
+script = '''
+wget https://github.com/glennrp/libpng/archive/refs/tags/v1.6.37.tar.gz
+tar -xvf v1.6.37.tar.gz
+'''
+
+# Compilers
+[tasks.cxx]
+command = "cargo"
+args = ["build", "--profile", "${PROFILE}"]
+
+[tasks.cc]
+command = "cargo"
+args = ["build", "--profile", "${PROFILE}"]
+
+[tasks.crash_cxx]
+command = "cargo"
+args = ["build", "--profile", "${PROFILE}", "--features=crash"]
+
+[tasks.crash_cc]
+command = "cargo"
+args = ["build", "--profile", "${PROFILE}", "--features=crash"]
+
+# Library
+[tasks.lib]
+script_runner = "@shell"
+script = '''
+cd libpng-1.6.37 && ./configure --enable-shared=no --with-pic=yes --enable-hardware-optimizations=yes
+cd "${PROJECT_DIR}"
+make -C libpng-1.6.37 CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
+'''
+dependencies = ["libpng", "cxx", "cc"]
+
+# Library
+[tasks.crash_lib]
+script_runner = "@shell"
+script = '''
+cd libpng-1.6.37 && ./configure --enable-shared=no --with-pic=yes --enable-hardware-optimizations=yes
+cd "${PROJECT_DIR}"
+make -C libpng-1.6.37 CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
+'''
+dependencies = ["libpng", "crash_cxx", "crash_cc"]
+
+# Harness
+[tasks.fuzzer]
+command = "${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
+args = [
+  "${PROJECT_DIR}/harness_png.cc",
+  "${PROJECT_DIR}/libpng-1.6.37/.libs/libpng16.a",
+  "-I",
+  "${PROJECT_DIR}/libpng-1.6.37/",
+  "-o",
+  "${FUZZER_NAME}",
+  "-lm",
+  "-lz",
+]
+dependencies = ["lib", "cxx", "cc"]
+#dependencies = ["cxx", "cc"]
+
+# Crashing Harness
+[tasks.fuzzer_crash]
+command = "${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
+args = [
+  "${PROJECT_DIR}/harness.cc",
+  "${PROJECT_DIR}/libpng-1.6.37/.libs/libpng16.a",
+  "-I",
+  "${PROJECT_DIR}/libpng-1.6.37/",
+  "-o",
+  "${FUZZER_NAME}_crash",
+  "-lm",
+  "-lz",
+]
+dependencies = ["crash_lib", "crash_cxx", "crash_cc"]
+
+# Run the fuzzer
+[tasks.run]
+script_runner = "@shell"
+script = '''
+./${FUZZER_NAME} &
+sleep 0.2
+./${FUZZER_NAME} 2>/dev/null
+'''
+dependencies = ["fuzzer"]
+
+
+# Run the fuzzer with a crash
+[tasks.crash]
+script_runner = "@shell"
+script = '''
+./${FUZZER_NAME}_crash &
+sleep 0.2
+./${FUZZER_NAME}_crash 2>/dev/null
+'''
+dependencies = ["fuzzer_crash"]
+
+
+# Test
+[tasks.test]
+script_runner = "@shell"
+script = '''
+rm -rf libafl_unix_shmem_server || true
+(timeout 31s ./${FUZZER_NAME} | tee fuzz_stdout.log 2>/dev/null || true) &
+sleep 0.2
+timeout 30s ./${FUZZER_NAME} >/dev/null 2>/dev/null || true
+if grep -qa "corpus: 30" fuzz_stdout.log; then
+    echo "Fuzzer is working"
+else
+    echo "Fuzzer does not generate any testcases or any crashes"
+    exit 1
+fi
+'''
+dependencies = ["fuzzer"]
+
+# Clean up
+[tasks.clean]
+# Disable default `clean` definition
+clear = true
+script_runner = "@shell"
+script = '''
+rm -f ./${FUZZER_NAME}
+make -C libpng-1.6.37 clean
+cargo clean
+'''
