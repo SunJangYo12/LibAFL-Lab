@@ -6,7 +6,7 @@ use std::ptr;
 use std::{env, path::PathBuf};
 
 use libafl::{
-    corpus::{Corpus, InMemoryCorpus, OnDiskCorpus},
+    corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
     events::{setup_restarting_mgr_std, EventConfig, EventRestarter},
     executors::{inprocess::InProcessExecutor, ExitKind},
     feedback_or, feedback_or_fast,
@@ -34,6 +34,7 @@ use libafl_bolts::{
 use libafl_targets::{libfuzzer_initialize, libfuzzer_test_one_input, EDGES_MAP, MAX_EDGES_FOUND};
 use mimalloc::MiMalloc;
 
+// pengganti malloc atau jmalloc yang lebih efisien
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -41,8 +42,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn libafl_main() {
-    // Registry the metadata types used in this fuzzer
-    // Needed only on no_std
+    // Hanya dibutuhkan di no_std
     // unsafe { RegistryBuilder::register::<Tokens>(); }
 
     println!(
@@ -50,7 +50,8 @@ pub extern "C" fn libafl_main() {
         env::current_dir().unwrap().to_string_lossy().to_string()
     );
     fuzz(
-        &[PathBuf::from("./corpus-png")],
+        &[PathBuf::from("./seeds-png")],
+        PathBuf::from("./corpus"),
         PathBuf::from("./crashes"),
         1337,
     )
@@ -59,7 +60,7 @@ pub extern "C" fn libafl_main() {
 
 /// The actual fuzzer
 #[cfg(not(test))]
-fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Result<(), Error> {
+fn fuzz(corpus_dirs: &[PathBuf], corp_dir: PathBuf, objective_dir: PathBuf, broker_port: u16) -> Result<(), Error> {
     // 'While the stats are state, they are usually used in the broker - which is likely never restarted
     let monitor = MultiMonitor::new(|s| println!("{s}"));
 
@@ -111,15 +112,9 @@ fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Re
         StdState::new(
             // RNG
             StdRand::new(),
-            // Corpus that will be evolved, we keep it in memory for performance
-            InMemoryCorpus::new(),
-            // Corpus in which we store solutions (crashes in this example),
-            // on disk so the user can get them after stopping the fuzzer
+            InMemoryOnDiskCorpus::new(corp_dir).unwrap(),
             OnDiskCorpus::new(objective_dir).unwrap(),
-            // States of the feedbacks.
-            // The feedbacks can report the data that should persist in the State.
             &mut feedback,
-            // Same for objective feedbacks
             &mut objective,
         )
         .unwrap()
@@ -139,11 +134,8 @@ fn fuzz(corpus_dirs: &[PathBuf], objective_dir: PathBuf, broker_port: u16) -> Re
     }
 
     // Setup a basic mutator with a mutational stage
-
     let mutator = StdScheduledMutator::new(havoc_mutations().merge(tokens_mutations()));
-
     let power = StdPowerMutationalStage::new(mutator);
-
     let mut stages = tuple_list!(calibration, power);
 
     // A minimization+queue policy to get testcasess from the corpus

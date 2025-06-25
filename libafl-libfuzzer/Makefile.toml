@@ -5,16 +5,22 @@ PROJECT_DIR = { script = ["pwd"] }
 CARGO_TARGET_DIR = { value = "${PROJECT_DIR}/target", condition = { env_not_set = [
   "CARGO_TARGET_DIR",
 ] } }
-PROFILE = { value = "release", condition = { env_not_set = ["PROFILE"] } }
-PROFILE_DIR = { value = "release", condition = { env_not_set = [
+
+### debuging = dev & debug
+### release = release & release
+PROFILE = { value = 'dev', condition = { env_not_set = ["PROFILE"] } }
+PROFILE_DIR = { value = 'debug', condition = { env_not_set = [
   "PROFILE_DIR",
 ] } }
+
+
 LIBAFL_CC = '${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc'
 LIBAFL_CXX = '${CARGO_TARGET_DIR}/${PROFILE}/libafl_cxx'
 FUZZER = '${CARGO_TARGET_DIR}/${PROFILE_DIR}/${FUZZER_NAME}'
 
 
-# libpng
+
+# get & extract libpng
 [tasks.libpng]
 condition = { files_not_exist = ["./libpng-1.6.37"] }
 script_runner = "@shell"
@@ -40,6 +46,8 @@ args = ["build", "--profile", "${PROFILE}", "--features=crash"]
 command = "cargo"
 args = ["build", "--profile", "${PROFILE}", "--features=crash"]
 
+
+
 # Library
 [tasks.lib]
 script_runner = "@shell"
@@ -50,7 +58,7 @@ make -C libpng-1.6.37 CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${C
 '''
 dependencies = ["libpng", "cxx", "cc"]
 
-# Library
+# Library crash dummy
 [tasks.crash_lib]
 script_runner = "@shell"
 script = '''
@@ -74,9 +82,10 @@ args = [
   "-lz",
 ]
 dependencies = ["lib", "cxx", "cc"]
-#dependencies = ["cxx", "cc"]
 
-# Crashing Harness
+
+
+# Crashing Harness dummy
 [tasks.fuzzer_crash]
 command = "${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
 args = [
