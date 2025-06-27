@@ -1,213 +1,144 @@
-//! A libfuzzer-like fuzzer with llmp-multithreading support and restarts
-//! The example harness is built for libpng.
-use core::time::Duration;
-#[cfg(feature = "crash")]
-use std::ptr;
-use std::{env, path::PathBuf};
+use std::path::PathBuf;
+use std::time::Duration;
 
-use libafl::{
-    corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
-    events::{setup_restarting_mgr_std, EventConfig, EventRestarter},
-    executors::{inprocess::InProcessExecutor, ExitKind},
-    feedback_or, feedback_or_fast,
-    feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
-    fuzzer::{Fuzzer, StdFuzzer},
-    inputs::{BytesInput, HasTargetBytes},
-    monitors::MultiMonitor,
-    mutators::{
-        scheduled::{havoc_mutations, tokens_mutations, StdScheduledMutator},
-        token_mutations::Tokens,
-    },
-    observers::{CanTrack, HitcountsMapObserver, StdMapObserver, TimeObserver},
-    schedulers::{
-        powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, StdWeightedScheduler,
-    },
-    stages::{calibrate::CalibrationStage, power::StdPowerMutationalStage},
-    state::{HasCorpus, StdState},
-    Error, HasMetadata,
-};
-use libafl_bolts::{
-    rands::StdRand,
-    tuples::{tuple_list, Merge},
-    AsSlice,
-};
-use libafl_targets::{libfuzzer_initialize, libfuzzer_test_one_input, EDGES_MAP, MAX_EDGES_FOUND};
-use mimalloc::MiMalloc;
+use libafl::corpus::{Corpus, InMemoryCorpus, OnDiskCorpus};
+use libafl::events::{setup_restarting_mgr_std, EventConfig, EventRestarter};
+use libafl::executors::{ExitKind, InProcessExecutor};
+use libafl::feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback};
+use libafl::inputs::{BytesInput, HasTargetBytes};
+use libafl::monitors::MultiMonitor;
+use libafl::mutators::{havoc_mutations, StdScheduledMutator};
+use libafl::observers::{CanTrack, HitcountsMapObserver, TimeObserver};
+use libafl::schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler};
+use libafl::stages::StdMutationalStage;
+use libafl::state::{HasCorpus, StdState};
+use libafl::{feedback_and_fast, feedback_or, Error, Fuzzer, StdFuzzer};
+use libafl_bolts::rands::StdRand;
+use libafl_bolts::tuples::tuple_list;
+use libafl_bolts::{current_nanos, AsSlice};
+use libafl_targets::{libfuzzer_test_one_input, std_edges_map_observer};
 
-// pengganti malloc atau jmalloc yang lebih efisien
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
-
-/// The main fn, `no_mangle` as it is a C main
-#[cfg(not(test))]
 #[no_mangle]
-pub extern "C" fn libafl_main() {
-    // Hanya dibutuhkan di no_std
-    // unsafe { RegistryBuilder::register::<Tokens>(); }
+fn libafl_main() -> Result<(), Error> {
 
-    println!(
-        "Workdir: {:?}",
-        env::current_dir().unwrap().to_string_lossy().to_string()
-    );
-    fuzz(
-        &[PathBuf::from("./seeds-png")],
-        PathBuf::from("./corpus"),
-        PathBuf::from("./crashes"),
-        1337,
-    )
-    .expect("An error occurred while fuzzing");
-}
+    // Component: Corpus
+    let corpus_dirs = vec![PathBuf::from("./seeds")];
+    let input_corpus = InMemoryCorpus::<BytesInput>::new();
+    let solutions_corpus = OnDiskCorpus::new(PathBuf::from("./crash")).unwrap();
 
-/// The actual fuzzer
-#[cfg(not(test))]
-fn fuzz(corpus_dirs: &[PathBuf], corp_dir: PathBuf, objective_dir: PathBuf, broker_port: u16) -> Result<(), Error> {
-    // 'While the stats are state, they are usually used in the broker - which is likely never restarted
-    let monitor = MultiMonitor::new(|s| println!("{s}"));
 
-    // The restarting state will spawn the same process again as child, then restarted it each time it crashes.
-    let (state, mut restarting_mgr) =
-        match setup_restarting_mgr_std(monitor, broker_port, EventConfig::AlwaysUnique) {
-            Ok(res) => res,
-            Err(err) => match err {
-                Error::ShuttingDown => {
-                    return Ok(());
-                }
-                _ => {
-                    panic!("Failed to setup the restarter: {err}");
-                }
-            },
-        };
+    // Component: Observer
+    let edges_observer = HitcountsMapObserver::new(unsafe { //mengamati coverage dengan memanfaatkan sancov instrumnen
+        std_edges_map_observer("edges")
+    }).track_indices();
+    let time_observer = TimeObserver::new("time"); //mengukur wakti eksekusi input
 
-    // Create an observation channel using the coverage map
-    let edges_observer = unsafe {
-        HitcountsMapObserver::new(StdMapObserver::from_mut_ptr(
-            "edges",
-            EDGES_MAP.as_mut_ptr(),
-            MAX_EDGES_FOUND,
-        ))
-        .track_indices()
-    };
 
-    // Create an observation channel to keep track of the execution time
-    let time_observer = TimeObserver::new("time");
-
-    let map_feedback = MaxMapFeedback::new(&edges_observer);
-
-    let calibration = CalibrationStage::new(&map_feedback);
-
-    // Feedback to rate the interestingness of an input
-    // This one is composed by two Feedbacks in OR
-    let mut feedback = feedback_or!(
-        // New maximization map feedback linked to the edges observer and the feedback state
-        map_feedback,
-        // Time feedback, this one does not need a feedback state
+    // Component: Feedback
+    let mut feedback = feedback_or!(  //menentukan apakah sebuah input bernilai cukup menarik untuk disimpan
+        MaxMapFeedback::new(&edges_observer),
         TimeFeedback::new(&time_observer)
     );
 
-    // A feedback to choose if an input is a solution or not
-    let mut objective = feedback_or_fast!(CrashFeedback::new(), TimeoutFeedback::new());
+    // menentukan apakah input dianggap berhasil (misalnya crash) dan ditandai sebagai solusi.
+    let mut objective = feedback_and_fast!(CrashFeedback::new(), MaxMapFeedback::new(&edges_observer));
 
-    // If not restarting, create a State from scratch
+
+
+    // Component: Monitor
+    let monitor = MultiMonitor::new(|s| { //mencetak output ke stdout
+        println!("{}", s);
+    });
+
+    // Component: EventManager
+    /* mgr = EventManager mengatur komunikasi antara fuzzer dan thread / worker lain
+     * setup_restarting_mgr_std = memungkinkan restart otomatis setelah crash
+    */
+    let (state, mut mgr) = match setup_restarting_mgr_std(monitor, 1337, EventConfig::AlwaysUnique)
+    {
+        Ok(res) => res,
+        Err(err) => match err {
+            Error::ShuttingDown => {
+                return Ok(());
+            }
+            _ => {
+                panic!("Failed to setup the restarting manager: {}", err);
+            }
+        },
+    };
+
+
+    // Component: State
     let mut state = state.unwrap_or_else(|| {
         StdState::new(
-            // RNG
-            StdRand::new(),
-            InMemoryOnDiskCorpus::new(corp_dir).unwrap(),
-            OnDiskCorpus::new(objective_dir).unwrap(),
+            StdRand::with_seed(current_nanos()),
+            input_corpus,
+            solutions_corpus,
             &mut feedback,
             &mut objective,
         )
         .unwrap()
     });
 
-    println!("We're a client, let's fuzz :)");
 
-    // Create a PNG dictionary if not existing
-    if state.metadata_map().get::<Tokens>().is_none() {
-        state.add_metadata(Tokens::from([
-            vec![137, 80, 78, 71, 13, 10, 26, 10], // PNG header
-            "IHDR".as_bytes().to_vec(),
-            "IDAT".as_bytes().to_vec(),
-            "PLTE".as_bytes().to_vec(),
-            "IEND".as_bytes().to_vec(),
-        ]));
-    }
+    // Component: Scheduler
+    let scheduler = IndexesLenTimeMinimizerScheduler::new(&edges_observer, QueueScheduler::new());
+    // menentukan urutan input mana dari corpus yang akan difuzz berikutnya
+    // strategi: memproitaskan input dengan index tertentu, pendek atau cepat dijalankan
 
-    // Setup a basic mutator with a mutational stage
-    let mutator = StdScheduledMutator::new(havoc_mutations().merge(tokens_mutations()));
-    let power = StdPowerMutationalStage::new(mutator);
-    let mut stages = tuple_list!(calibration, power);
 
-    // A minimization+queue policy to get testcasess from the corpus
-    let scheduler = IndexesLenTimeMinimizerScheduler::new(
-        &edges_observer,
-        StdWeightedScheduler::with_schedule(&mut state, &edges_observer, Some(PowerSchedule::FAST)),
-    );
+    // Component: Fuzzer
+    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective); //object fuzzer utama yang menjalankan loop. menggunakan scheduler, feedback dan goal(objective/crash)
 
-    // A fuzzer with feedbacks and a corpus scheduler
-    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
-
-    // The wrapped harness function, calling out to the LLVM-style harness
+    // Component: harness
     let mut harness = |input: &BytesInput| {
-        let target = input.target_bytes();
-        let buf = target.as_slice();
-        #[cfg(feature = "crash")]
-        if buf.len() > 4 && buf[4] == 0 {
-            unsafe {
-                eprintln!("Crashing (for testing purposes)");
-                let addr = ptr::null_mut();
-                *addr = 1;
-            }
-        }
-        libfuzzer_test_one_input(buf);
-        ExitKind::Ok
+        let target = input.target_bytes(); //fungsi target yang dipanggil fuzzer
+        let buffer = target.as_slice();
+        unsafe { libfuzzer_test_one_input(buffer) }; //input akan dipanggil ke fungsi C libfuzzzer_test_one_input.
+        ExitKind::Ok                                 //fungsi ini berasal dari c/c++ target dan di link via libafl_targets
     };
 
- 
-    // Buat executor untuk fungsi dalam proses dengan satu observer 
-    // untuk cakupan tepi dan satu untuk waktu eksekusi    
-    let mut executor = InProcessExecutor::with_timeout(
+
+    // Component: Executor
+    let mut in_proc_executor = InProcessExecutor::with_timeout( //menjalankan harness dalam proses(singgle thread), lebih cepat.
         &mut harness,
         tuple_list!(edges_observer, time_observer),
         &mut fuzzer,
         &mut state,
-        &mut restarting_mgr,
-        Duration::new(10, 0),
-    )?;
-    // 10 seconds timeout
+        &mut mgr,
+        Duration::from_millis(5000), //timeout diset agar infinite loop/input lambat bisa dihentikan
+    )
+    .unwrap();
 
-    // The actual target run starts here.
-    // Call LLVMFUzzerInitialize() if present.
-    let args: Vec<String> = env::args().collect();
-    if libfuzzer_initialize(&args) == -1 {
-        println!("Warning: LLVMFuzzerInitialize failed with -1");
-    }
-
-    // In case the corpus is empty (on first run), reset
-    if state.must_load_initial_inputs() {
+    if state.corpus().count() < 1 { //load corpus awal, jika corpus masih kosong isi dari file input pada ./corpus
         state
-            .load_initial_inputs(&mut fuzzer, &mut executor, &mut restarting_mgr, corpus_dirs)
-            .unwrap_or_else(|_| panic!("Failed to load initial corpus at {:?}", &corpus_dirs));
+            .load_initial_inputs(&mut fuzzer, &mut in_proc_executor, &mut mgr, &corpus_dirs)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "Failed to load initial corpus at {:?}: {:?}",
+                    &corpus_dirs, err
+                )
+            });
         println!("We imported {} inputs from disk.", state.corpus().count());
     }
 
+    // Component: Mutator
+    let mutator = StdScheduledMutator::new(havoc_mutations()); //strategi mutasi acak klasik (insert,delete,bitflip, dsb)
 
-    // Fuzzer ini memulai kembali setelah 1 mio `fuzz_one` eksekusi.     
-    // Setiap fuzz_one akan secara internal melakukan banyak eksekusi target.     
-    // Jika target Anda sangat tidak aktif, menetapkan penghitungan rendah di sini dapat membantu.     
-    // Namun, Anda akan kehilangan banyak kinerja seperti itu.
-    let iters = 1_000_000;
-    fuzzer.fuzz_loop_for(
-        &mut stages,
-        &mut executor,
-        &mut state,
-        &mut restarting_mgr,
-        iters,
-    )?;
 
-    // Penting, bahwa kami menyimpan state sebelum memulai kembali!
-    // Kalau tidak, orang tua tidak akan menanggapi anak baru dan berhenti.
-    restarting_mgr.on_restart(&mut state)?;
+    // Component: Stage
+    let mut stages = tuple_list!(StdMutationalStage::new(mutator)); //yang akan menjalankan mutasi
+
+    fuzzer.fuzz_loop_for( //menjalankan loop fuzzing selama 1000 iterasi, bisa diganti fuzz_loop() untuk tanpa batas
+            &mut stages,
+            &mut in_proc_executor,
+            &mut state,
+            &mut mgr,
+            1000,
+        )
+        .unwrap();
+    mgr.on_restart(&mut state).unwrap();
 
     Ok(())
 }
+

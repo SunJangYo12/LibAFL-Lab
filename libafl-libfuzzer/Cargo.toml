@@ -1,5 +1,5 @@
 [package]
-name = "fuzz-libpng"
+name = "fuzz-libexif"
 version = "0.1.0"
 edition = "2021"
 
@@ -33,5 +33,5 @@ libafl_cc = { version = "0.13.2" }
 mimalloc = { version = "=0.1.47", default-features = false }
 
 [lib]
-name = "libfuzzer_libpng"
+name = "libfuzzer_static"
 crate-type = ["staticlib"]

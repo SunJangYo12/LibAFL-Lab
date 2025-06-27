@@ -1,6 +1,6 @@
 # Variables
 [env]
-FUZZER_NAME = 'fuzzer_libpng'
+FUZZER_NAME = 'fuzzer_libexif'
 PROJECT_DIR = { script = ["pwd"] }
 CARGO_TARGET_DIR = { value = "${PROJECT_DIR}/target", condition = { env_not_set = [
   "CARGO_TARGET_DIR",
@@ -21,12 +21,13 @@ FUZZER = '${CARGO_TARGET_DIR}/${PROFILE_DIR}/${FUZZER_NAME}'
 
 
 # get & extract libpng
-[tasks.libpng]
-condition = { files_not_exist = ["./libpng-1.6.37"] }
+[tasks.gettarget]
+condition = { files_not_exist = ["./libexif"] }
 script_runner = "@shell"
 script = '''
-wget https://github.com/glennrp/libpng/archive/refs/tags/v1.6.37.tar.gz
-tar -xvf v1.6.37.tar.gz
+wget https://github.com/libexif/libexif/archive/refs/tags/libexif-0_6_14-release.tar.gz
+tar -xvf libexif-0_6_14-release.tar.gz
+mv libexif-libexif-0_6_14-release libexif
 '''
 
 # Compilers
@@ -38,44 +39,31 @@ args = ["build", "--profile", "${PROFILE}"]
 command = "cargo"
 args = ["build", "--profile", "${PROFILE}"]
 
-[tasks.crash_cxx]
-command = "cargo"
-args = ["build", "--profile", "${PROFILE}", "--features=crash"]
-
-[tasks.crash_cc]
-command = "cargo"
-args = ["build", "--profile", "${PROFILE}", "--features=crash"]
-
 
 
 # Library
 [tasks.lib]
 script_runner = "@shell"
 script = '''
-cd libpng-1.6.37 && ./configure --enable-shared=no --with-pic=yes --enable-hardware-optimizations=yes
+# apt install autopoint libtool gettext libpopt-dev
+cd libexif
+autoreconf -fi
+./configure --enable-shared=no --prefix=`pwd`/install
+make CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
+make install
 cd "${PROJECT_DIR}"
-make -C libpng-1.6.37 CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
 '''
-dependencies = ["libpng", "cxx", "cc"]
+dependencies = ["gettarget", "cxx", "cc"]
 
-# Library crash dummy
-[tasks.crash_lib]
-script_runner = "@shell"
-script = '''
-cd libpng-1.6.37 && ./configure --enable-shared=no --with-pic=yes --enable-hardware-optimizations=yes
-cd "${PROJECT_DIR}"
-make -C libpng-1.6.37 CC="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc" CXX="${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
-'''
-dependencies = ["libpng", "crash_cxx", "crash_cc"]
 
 # Harness
 [tasks.fuzzer]
-command = "${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
+command = "${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cc"
 args = [
-  "${PROJECT_DIR}/harness_png.cc",
-  "${PROJECT_DIR}/libpng-1.6.37/.libs/libpng16.a",
-  "-I",
-  "${PROJECT_DIR}/libpng-1.6.37/",
+  "${PROJECT_DIR}/harness.c",
+  "${PROJECT_DIR}/libexif/install/lib/libexif.a",
+  "-I${PROJECT_DIR}/libexif/",
+  "-I${PROJECT_DIR}/libexif/install",
   "-o",
   "${FUZZER_NAME}",
   "-lm",
@@ -85,20 +73,6 @@ dependencies = ["lib", "cxx", "cc"]
 
 
 
-# Crashing Harness dummy
-[tasks.fuzzer_crash]
-command = "${CARGO_TARGET_DIR}/${PROFILE_DIR}/libafl_cxx"
-args = [
-  "${PROJECT_DIR}/harness.cc",
-  "${PROJECT_DIR}/libpng-1.6.37/.libs/libpng16.a",
-  "-I",
-  "${PROJECT_DIR}/libpng-1.6.37/",
-  "-o",
-  "${FUZZER_NAME}_crash",
-  "-lm",
-  "-lz",
-]
-dependencies = ["crash_lib", "crash_cxx", "crash_cc"]
 
 # Run the fuzzer
 [tasks.run]
@@ -111,15 +85,6 @@ sleep 0.2
 dependencies = ["fuzzer"]
 
 
-# Run the fuzzer with a crash
-[tasks.crash]
-script_runner = "@shell"
-script = '''
-./${FUZZER_NAME}_crash &
-sleep 0.2
-./${FUZZER_NAME}_crash 2>/dev/null
-'''
-dependencies = ["fuzzer_crash"]
 
 
 # Test
@@ -146,6 +111,6 @@ clear = true
 script_runner = "@shell"
 script = '''
 rm -f ./${FUZZER_NAME}
-make -C libpng-1.6.37 clean
+make -C libexif clean
 cargo clean
 '''
